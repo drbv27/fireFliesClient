@@ -1,0 +1,278 @@
+// Cargar las variables de entorno del archivo .env al inicio de la aplicación
+require("dotenv").config();
+
+// Importar los módulos necesarios
+const express = require("express");
+const bodyParser = require("body-parser"); // Importamos bodyParser completo
+const crypto = require("crypto");
+const {
+  submitAudioForTranscription,
+  getTranscriptById,
+} = require("./firefliesClient");
+
+const app = express();
+
+// --- MIDDLEWARES ---
+
+// Aplicamos bodyParser.json() de forma condicional:
+// Se aplicará a TODAS las rutas EXCEPTO a '/fireflies-webhook'.
+app.use((req, res, next) => {
+  if (req.path === "/fireflies-webhook") {
+    // Si la ruta es '/fireflies-webhook', llamamos a next() para pasar
+    // al siguiente middleware/manejador de ruta SIN que bodyParser.json() procese el cuerpo.
+    // Queremos el cuerpo crudo (raw) para esta ruta específica.
+    return next();
+  }
+  // Para todas las demás rutas, usamos bodyParser.json() para parsear cuerpos JSON.
+  bodyParser.json()(req, res, next);
+});
+
+// Para la ruta '/fireflies-webhook', AHORA este bodyParser.raw() será el PRIMERO
+// y ÚNICO bodyParser que procese el cuerpo de la solicitud, asegurando que req.body sea un Buffer.
+// No es necesario usar app.use() aquí, ya que lo estamos aplicando directamente a la ruta.
+// ESTA LÍNEA DE ABAJO QUE USÁBAMOS ANTES YA NO ES NECESARIA AQUÍ SI LO PONEMOS EN EL app.post
+// app.use('/fireflies-webhook', bodyParser.raw({ type: 'application/json' })); // Ya no aquí
+
+// --- DEFINICIÓN DE RUTAS / ENDPOINTS ---
+
+app.get("/", (req, res) => {
+  res.send("¡Hola! El servidor de transcripción está funcionando.");
+});
+
+app.post("/transcribe", async (req, res) => {
+  // Este endpoint usará el bodyParser.json() condicional de arriba.
+  const { videoUrl, title } = req.body;
+
+  if (!videoUrl) {
+    return res.status(400).send({ error: 'El campo "videoUrl" es requerido.' });
+  }
+  const webhookNotificationUrl = `${process.env.SERVER_BASE_URL}/fireflies-webhook`;
+  try {
+    console.log(
+      `Endpoint /transcribe: Recibida solicitud para transcribir video: ${videoUrl}`
+    );
+    console.log(
+      `Endpoint /transcribe: URL de notificación para Fireflies (webhook): ${webhookNotificationUrl}`
+    );
+    const firefliesResponse = await submitAudioForTranscription(
+      videoUrl,
+      title ||
+        `Transcripción para ${videoUrl.substring(
+          videoUrl.lastIndexOf("/") + 1
+        )}`,
+      webhookNotificationUrl,
+      "es"
+    );
+    console.log(
+      "Endpoint /transcribe: Respuesta de Fireflies.ai al enviar audio:",
+      JSON.stringify(firefliesResponse, null, 2)
+    );
+    res.status(202).send({
+      message:
+        "Video enviado a Fireflies.ai para transcripción. La notificación llegará al webhook configurado.",
+      details: firefliesResponse,
+    });
+  } catch (error) {
+    console.error(
+      "Endpoint /transcribe: Error al enviar video a Fireflies.ai:",
+      error.message
+    );
+    if (error.response && error.response.data) {
+      console.error(
+        "Endpoint /transcribe: Detalles del error de Fireflies:",
+        JSON.stringify(error.response.data, null, 2)
+      );
+      return res.status(500).send({
+        error: "Error al comunicarse con Fireflies.ai.",
+        details: error.response.data,
+      });
+    }
+    res
+      .status(500)
+      .send({
+        error:
+          "Error interno del servidor al procesar la solicitud /transcribe.",
+      });
+  }
+});
+
+// Endpoint para recibir las notificaciones (webhooks) de Fireflies.ai
+// Aplicamos bodyParser.raw() como middleware específico para ESTA ruta.
+// Ahora debería ser el único bodyParser que actúe sobre las solicitudes a /fireflies-webhook.
+app.post(
+  "/fireflies-webhook",
+  bodyParser.raw({ type: "application/json" }),
+  async (req, res) => {
+    console.log(
+      "Endpoint /fireflies-webhook: ¡Notificación de webhook de Fireflies recibida!"
+    );
+
+    console.log(
+      "Endpoint /fireflies-webhook: Headers recibidos:",
+      JSON.stringify(req.headers, null, 2)
+    );
+    console.log(
+      "Endpoint /fireflies-webhook: Tipo de req.body:",
+      typeof req.body
+    );
+    console.log(
+      "Endpoint /fireflies-webhook: ¿Es req.body un Buffer?:",
+      req.body instanceof Buffer
+    );
+    if (req.body instanceof Buffer) {
+      console.log(
+        "Endpoint /fireflies-webhook: Contenido de req.body (Buffer convertido a String - primeros 500 chars):",
+        req.body.toString().substring(0, 500)
+      );
+    } else {
+      // Si esto sigue sucediendo, es muy extraño, pero el log nos dirá.
+      console.log(
+        "Endpoint /fireflies-webhook: Contenido de req.body (tal cual, NO es Buffer):",
+        JSON.stringify(req.body, null, 2)
+      );
+    }
+
+    const firefliesSignature = req.headers["x-hub-signature"];
+    const webhookSecret = process.env.WEBHOOK_SECRET;
+
+    try {
+      if (firefliesSignature) {
+        if (!webhookSecret) {
+          console.error(
+            "Endpoint /fireflies-webhook: WEBHOOK_SECRET no está configurado."
+          );
+          throw new Error(
+            "WEBHOOK_SECRET no configurado, no se puede verificar la firma."
+          );
+        }
+        // Esta es la prueba de fuego: req.body DEBE ser un Buffer aquí.
+        const hmac = crypto.createHmac("sha256", webhookSecret);
+        hmac.update(req.body);
+        const calculatedSignature = `sha256=${hmac.digest("hex")}`;
+        const isValidSignature = crypto.timingSafeEqual(
+          Buffer.from(calculatedSignature),
+          Buffer.from(firefliesSignature)
+        );
+
+        if (!isValidSignature) {
+          console.warn(
+            "Endpoint /fireflies-webhook: Firma de webhook inválida."
+          );
+          return res.status(403).send("Firma inválida. Acceso denegado.");
+        }
+        console.log(
+          "Endpoint /fireflies-webhook: Firma del webhook verificada correctamente."
+        );
+      } else {
+        console.warn(
+          "Endpoint /fireflies-webhook: Webhook recibido SIN firma (x-hub-signature). NO SE REALIZÓ VERIFICACIÓN."
+        );
+        // return res.status(400).send('Firma (x-hub-signature) esperada pero no proporcionada.'); // Considera descomentar en producción
+      }
+
+      // Parsear el Payload del Webhook
+      // Si la lógica anterior funcionó, req.body es un Buffer.
+      if (!(req.body instanceof Buffer)) {
+        console.error(
+          "Endpoint /fireflies-webhook: ¡ERROR CRÍTICO! req.body no es un Buffer ANTES de JSON.parse. Tipo:",
+          typeof req.body
+        );
+        // Si esto ocurre, significa que bodyParser.raw() en la ruta no funcionó como se esperaba, incluso con el bodyParser.json() condicional.
+        throw new Error(
+          "El cuerpo de la solicitud no es un Buffer como se esperaba. Algo está mal con la configuración de bodyParser."
+        );
+      }
+      const payload = JSON.parse(req.body.toString()); // Esto es correcto si req.body es un Buffer
+      console.log(
+        "Endpoint /fireflies-webhook: Payload del webhook procesado:",
+        JSON.stringify(payload, null, 2)
+      );
+
+      // Procesar el evento específico y obtener la transcripción
+      if (
+        payload.eventType === "Transcription completed" &&
+        payload.meetingId
+      ) {
+        const transcriptId = payload.meetingId;
+        console.log(
+          `Endpoint /fireflies-webhook: Evento 'Transcription completed' para ID: ${transcriptId}`
+        );
+
+        try {
+          const transcriptData = await getTranscriptById(transcriptId);
+          console.log("--- TRANSCRIPCIÓN RECUPERADA POR WEBHOOK ---");
+          if (transcriptData && transcriptData.transcript) {
+            console.log(`Título: ${transcriptData.transcript.title}`);
+            if (
+              transcriptData.transcript.sentences &&
+              transcriptData.transcript.sentences.length > 0
+            ) {
+              transcriptData.transcript.sentences
+                .slice(0, 5)
+                .forEach((sentence) => {
+                  console.log(
+                    `  ${sentence.speaker_name || "Hablante"}: ${sentence.text}`
+                  );
+                });
+            } else {
+              console.log("La transcripción no contiene frases (sentences).");
+            }
+          } else {
+            console.log(
+              "Endpoint /fireflies-webhook: No se encontró la transcripción o la estructura es inesperada.",
+              transcriptData
+            );
+          }
+          console.log("-----------------------------------------");
+        } catch (error) {
+          console.error(
+            `Endpoint /fireflies-webhook: Error al recuperar la transcripción ${transcriptId}:`,
+            error.message
+          );
+          // ... (manejo de error interno)
+        }
+      } else {
+        console.log(
+          "Endpoint /fireflies-webhook: Evento de webhook no manejado o meetingId faltante. Evento:",
+          payload.eventType
+        );
+      }
+      res.status(200).send("Webhook recibido y procesado.");
+    } catch (error) {
+      console.error(
+        "Endpoint /fireflies-webhook: Error general procesando el webhook:",
+        error.message
+      );
+      console.error(error.stack);
+      res.status(500).send("Error interno al procesar el webhook.");
+    }
+  }
+);
+
+// --- INICIAR EL SERVIDOR ---
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`Servidor escuchando en el puerto ${PORT}`);
+  console.log(
+    `URL base del servidor (configurada en .env para ngrok): ${process.env.SERVER_BASE_URL}`
+  );
+  console.log(
+    `El endpoint para enviar videos a transcribir es: POST ${
+      process.env.SERVER_BASE_URL || `http://localhost:${PORT}`
+    }/transcribe`
+  );
+  console.log(
+    `El endpoint para recibir webhooks de Fireflies es: POST ${
+      process.env.SERVER_BASE_URL || `http://localhost:${PORT}`
+    }/fireflies-webhook`
+  );
+  if (
+    process.env.SERVER_BASE_URL &&
+    process.env.SERVER_BASE_URL.includes("localhost") &&
+    process.env.NODE_ENV !== "development_local_only"
+  ) {
+    console.warn("ADVERTENCIA: SERVER_BASE_URL parece apuntar a localhost...");
+  } else if (!process.env.SERVER_BASE_URL) {
+    console.warn("ADVERTENCIA: SERVER_BASE_URL no está definida...");
+  }
+});

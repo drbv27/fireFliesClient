@@ -1,0 +1,157 @@
+// Importar axios para hacer solicitudes HTTP
+const axios = require("axios");
+// Cargar variables de entorno (necesitaremos FIREFLIES_API_KEY)
+require("dotenv").config();
+
+// La URL del endpoint GraphQL de Fireflies.ai
+const FIREFLIES_API_URL = "https://api.fireflies.ai/graphql";
+// Tu clave API de Fireflies.ai desde las variables de entorno
+const API_KEY = process.env.FIREFLIES_API_KEY;
+
+/**
+ * Función genérica para hacer solicitudes a la API GraphQL de Fireflies.ai.
+ * @param {string} query La consulta o mutación GraphQL.
+ * @param {object} variables Las variables para la consulta o mutación.
+ * @returns {Promise<object>} Los datos de la respuesta de la API.
+ * @throws {Error} Si hay un error en la solicitud o la API devuelve errores GraphQL.
+ */
+async function makeGraphQLRequest(query, variables) {
+  try {
+    const response = await axios.post(
+      FIREFLIES_API_URL,
+      {
+        query: query,
+        variables: variables,
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${API_KEY}`,
+        },
+      }
+    );
+
+    // Las APIs GraphQL pueden devolver un estado 200 OK pero incluir errores en la respuesta.
+    if (response.data.errors) {
+      console.error(
+        "Error en la respuesta GraphQL:",
+        JSON.stringify(response.data.errors, null, 2)
+      );
+      throw new Error(
+        `Error de GraphQL: ${JSON.stringify(response.data.errors)}`
+      );
+    }
+
+    return response.data.data; // Usualmente, los datos que queremos están en response.data.data
+  } catch (error) {
+    // Manejo de errores de la solicitud (red, etc.) o errores lanzados desde el if anterior.
+    if (error.response) {
+      // El servidor respondió con un estado fuera del rango 2xx
+      console.error(
+        "Error en la solicitud a Fireflies (respuesta del servidor):",
+        error.response.status,
+        JSON.stringify(error.response.data, null, 2)
+      );
+    } else if (error.request) {
+      // La solicitud se hizo pero no se recibió respuesta
+      console.error(
+        "Error en la solicitud a Fireflies (sin respuesta):",
+        error.request
+      );
+    } else {
+      // Algo más causó el error
+      console.error(
+        "Error al configurar la solicitud a Fireflies:",
+        error.message
+      );
+    }
+    // Re-lanzar el error para que la función que llama pueda manejarlo si es necesario.
+    throw error;
+  }
+}
+
+/**
+ * Envía una URL de audio/video a Fireflies.ai para transcripción.
+ * @param {string} audioUrl La URL pública del archivo de audio/video.
+ * @param {string} title Un título para la transcripción.
+ * @param {string} webhookUrl La URL del webhook donde Fireflies notificará. (¡OJO! Usamos 'webhook' en la API)
+ * @param {string} [customLanguage='es'] El código del idioma (ej. 'es' para español).
+ * @returns {Promise<object>} La respuesta de la API de Fireflies (confirmación de encolamiento).
+ */
+async function submitAudioForTranscription(
+  audioUrl,
+  title,
+  webhookUrl,
+  customLanguage = "es"
+) {
+  const mutation = `
+        mutation($input: AudioUploadInput) {
+            uploadAudio(input: $input) {
+                success
+                title
+                message
+            }
+        }
+    `;
+
+  const variables = {
+    input: {
+      url: audioUrl,
+      title: title,
+      webhook: webhookUrl, // Corregido a 'webhook' según nuestra prueba en Postman
+      custom_language: customLanguage,
+    },
+  };
+
+  console.log(
+    "Enviando audio para transcripción con variables:",
+    JSON.stringify(variables, null, 2)
+  );
+  return makeGraphQLRequest(mutation, variables);
+}
+
+/**
+ * Recupera una transcripción específica por su ID.
+ * @param {string} transcriptId El ID de la transcripción (obtenido del webhook, usualmente meetingId).
+ * @returns {Promise<object>} Los detalles de la transcripción.
+ */
+async function getTranscriptById(transcriptId) {
+  const query = `
+        query Transcript($transcriptId: String!) {
+            transcript(id: $transcriptId) {
+                id
+                title
+                # ELIMINAMOS 'status' de este nivel
+                # ELIMINAMOS 'text' (el bloque de texto completo) de este nivel
+                sentences {
+                    text # El texto de CADA FRASE está aquí y es válido
+                    start_time
+                    end_time
+                    speaker_name
+                    speaker_id
+                }
+                speakers {
+                    id
+                    name
+                }
+                # Puedes añadir aquí otros campos que la documentación de Fireflies especifique como válidos
+                # para el objeto 'Transcript' si los necesitas en el futuro.
+            }
+        }
+    `;
+
+  const variables = {
+    transcriptId: transcriptId,
+  };
+
+  console.log(
+    `Solicitando transcripción con ID: ${transcriptId} (con query GraphQL corregida)`
+  );
+  return makeGraphQLRequest(query, variables);
+}
+
+// Exportar las funciones que usaremos en otras partes de nuestra aplicación
+module.exports = {
+  submitAudioForTranscription,
+  getTranscriptById,
+};
