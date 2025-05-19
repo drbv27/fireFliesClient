@@ -3,9 +3,10 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
+"scripts": {
+  "start": "concurrently \"node index.js\" \"ngrok http --domain=grown-hornet-forcibly.ngrok-free.app 3001\""
+}
+,
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -17,5 +18,8 @@
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
     "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
   }
 }
