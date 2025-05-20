@@ -8,14 +8,16 @@ const crypto = require("crypto");
 const {
   submitAudioForTranscription,
   getTranscriptById,
-} = require("./firefliesClient"); // Usará la versión actualizada de arriba
+} = require("./firefliesClient"); // Usará la versión con cabeceras replicadas
 
 const app = express();
 
 // --- MIDDLEWARES ---
 // Aplicamos bodyParser.json() de forma condicional:
+// Se aplicará a TODAS las rutas EXCEPTO a la ruta específica del webhook.
 app.use((req, res, next) => {
-  if (req.path === "/fireflies-webhook") {
+  // La ruta completa del webhook es ahora /marketplace/files/fireflies
+  if (req.path === "/marketplace/files/fireflies") {
     return next();
   }
   bodyParser.json()(req, res, next);
@@ -24,7 +26,7 @@ app.use((req, res, next) => {
 // --- DEFINICIÓN DE RUTAS / ENDPOINTS ---
 app.get("/", (req, res) => {
   res.send(
-    "¡Hola! El servidor de transcripción está funcionando (versión completa y estable)."
+    "¡Hola! El servidor de transcripción está funcionando (Producción)."
   );
 });
 
@@ -34,14 +36,17 @@ app.post("/transcribe", async (req, res) => {
   if (!videoUrl) {
     return res.status(400).send({ error: 'El campo "videoUrl" es requerido.' });
   }
-  // webhookNotificationUrl se construye con SERVER_BASE_URL de .env (AHORA tu URL de ngrok estática)
-  const webhookNotificationUrl = `${process.env.SERVER_BASE_URL}/fireflies-webhook`;
+
+  // Construcción de la URL completa del webhook que se enviará a Fireflies.ai.
+  // SERVER_BASE_URL será 'https://api.nevtis.com' desde .env.
+  // La ruta del webhook es ahora '/marketplace/files/fireflies'.
+  const webhookNotificationUrl = `${process.env.SERVER_BASE_URL}/marketplace/files/fireflies`;
   try {
     console.log(
       `Endpoint /transcribe: Solicitud recibida para transcribir video: ${videoUrl}`
     );
     console.log(
-      `Endpoint /transcribe: URL de notificación para Fireflies (webhook): ${webhookNotificationUrl}`
+      `Endpoint /transcribe: URL de notificación para Fireflies (webhook) A ENVIAR: ${webhookNotificationUrl}`
     );
     const firefliesResponse = await submitAudioForTranscription(
       videoUrl,
@@ -49,7 +54,7 @@ app.post("/transcribe", async (req, res) => {
         `Transcripción para ${videoUrl.substring(
           videoUrl.lastIndexOf("/") + 1
         )}`,
-      webhookNotificationUrl, // Se pasa la URL de ngrok estática
+      webhookNotificationUrl, // Se pasa la URL completa del webhook de producción.
       "es"
     );
     console.log(
@@ -82,33 +87,35 @@ app.post("/transcribe", async (req, res) => {
   }
 });
 
+// Endpoint para recibir las notificaciones (webhooks) de Fireflies.ai.
+// La ruta ahora es '/marketplace/files/fireflies'.
 app.post(
-  "/fireflies-webhook",
-  bodyParser.raw({ type: "application/json" }),
+  "/marketplace/files/fireflies", // <-- RUTA ACTUALIZADA
+  bodyParser.raw({ type: "application/json" }), // Middleware para cuerpo raw en ESTA ruta.
   async (req, res) => {
     console.log(
-      "Endpoint /fireflies-webhook: ¡Notificación de webhook de Fireflies recibida!"
+      "Endpoint /marketplace/files/fireflies: ¡Notificación de webhook de Fireflies recibida!"
     );
     console.log(
-      "Endpoint /fireflies-webhook: Headers recibidos:",
+      "Endpoint /marketplace/files/fireflies: Headers recibidos:",
       JSON.stringify(req.headers, null, 2)
     );
     console.log(
-      "Endpoint /fireflies-webhook: Tipo de req.body:",
+      "Endpoint /marketplace/files/fireflies: Tipo de req.body:",
       typeof req.body
     );
     console.log(
-      "Endpoint /fireflies-webhook: ¿Es req.body un Buffer?:",
+      "Endpoint /marketplace/files/fireflies: ¿Es req.body un Buffer?:",
       req.body instanceof Buffer
     );
     if (req.body instanceof Buffer) {
       console.log(
-        "Endpoint /fireflies-webhook: Contenido de req.body (Buffer como String - primeros 500 chars):",
+        "Endpoint /marketplace/files/fireflies: Contenido de req.body (Buffer como String - primeros 500 chars):",
         req.body.toString().substring(0, 500)
       );
     } else {
       console.log(
-        "Endpoint /fireflies-webhook: Contenido de req.body (NO es Buffer):",
+        "Endpoint /marketplace/files/fireflies: Contenido de req.body (NO es Buffer):",
         JSON.stringify(req.body, null, 2)
       );
     }
@@ -120,7 +127,7 @@ app.post(
       if (firefliesSignature) {
         if (!webhookSecret) {
           console.error(
-            "Endpoint /fireflies-webhook: WEBHOOK_SECRET no está configurado."
+            "Endpoint /marketplace/files/fireflies: WEBHOOK_SECRET no está configurado."
           );
           throw new Error(
             "WEBHOOK_SECRET no configurado, no se puede verificar la firma."
@@ -136,22 +143,24 @@ app.post(
 
         if (!isValidSignature) {
           console.warn(
-            "Endpoint /fireflies-webhook: Firma de webhook inválida."
+            "Endpoint /marketplace/files/fireflies: Firma de webhook inválida."
           );
           return res.status(403).send("Firma inválida. Acceso denegado.");
         }
         console.log(
-          "Endpoint /fireflies-webhook: Firma del webhook verificada correctamente."
+          "Endpoint /marketplace/files/fireflies: Firma del webhook verificada correctamente."
         );
       } else {
         console.warn(
-          "Endpoint /fireflies-webhook: Webhook recibido SIN firma (x-hub-signature). NO SE REALIZÓ VERIFICACIÓN."
+          "Endpoint /marketplace/files/fireflies: Webhook recibido SIN firma (x-hub-signature). NO SE REALIZÓ VERIFICACIÓN."
         );
+        // En producción, se debería rechazar si se espera firma:
+        // return res.status(400).send('Firma (x-hub-signature) esperada pero no proporcionada.');
       }
 
       if (!(req.body instanceof Buffer)) {
         console.error(
-          "Endpoint /fireflies-webhook: ¡ERROR CRÍTICO! req.body no es un Buffer ANTES de JSON.parse. Tipo:",
+          "Endpoint /marketplace/files/fireflies: ¡ERROR CRÍTICO! req.body no es un Buffer ANTES de JSON.parse. Tipo:",
           typeof req.body
         );
         throw new Error(
@@ -160,7 +169,7 @@ app.post(
       }
       const payload = JSON.parse(req.body.toString());
       console.log(
-        "Endpoint /fireflies-webhook: Payload del webhook procesado:",
+        "Endpoint /marketplace/files/fireflies: Payload del webhook procesado:",
         JSON.stringify(payload, null, 2)
       );
 
@@ -170,7 +179,7 @@ app.post(
       ) {
         const transcriptId = payload.meetingId;
         console.log(
-          `Endpoint /fireflies-webhook: Evento 'Transcription completed' para ID: ${transcriptId}`
+          `Endpoint /marketplace/files/fireflies: Evento 'Transcription completed' para ID: ${transcriptId}`
         );
 
         try {
@@ -194,27 +203,27 @@ app.post(
             }
           } else {
             console.log(
-              "Endpoint /fireflies-webhook: No se encontró la transcripción o la estructura es inesperada.",
+              "Endpoint /marketplace/files/fireflies: No se encontró la transcripción o la estructura es inesperada.",
               transcriptData
             );
           }
           console.log("-----------------------------------------");
         } catch (error) {
           console.error(
-            `Endpoint /fireflies-webhook: Error al recuperar la transcripción ${transcriptId}:`,
+            `Endpoint /marketplace/files/fireflies: Error al recuperar la transcripción ${transcriptId}:`,
             error.message
           );
         }
       } else {
         console.log(
-          "Endpoint /fireflies-webhook: Evento de webhook no manejado o meetingId faltante. Evento:",
+          "Endpoint /marketplace/files/fireflies: Evento de webhook no manejado o meetingId faltante. Evento:",
           payload.eventType
         );
       }
       res.status(200).send("Webhook recibido y procesado.");
     } catch (error) {
       console.error(
-        "Endpoint /fireflies-webhook: Error general procesando el webhook:",
+        "Endpoint /marketplace/files/fireflies: Error general procesando el webhook:",
         error.message
       );
       console.error(error.stack);
@@ -224,11 +233,30 @@ app.post(
 );
 
 // --- INICIAR EL SERVIDOR ---
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3001; // El puerto interno donde escucha Node.js
 app.listen(PORT, () => {
   console.log(`Servidor Express escuchando activamente en el puerto ${PORT}`);
   console.log(
-    `URL base del servidor (esperada para ngrok en desarrollo): ${process.env.SERVER_BASE_URL}`
+    `URL base del servidor configurada en .env: ${process.env.SERVER_BASE_URL}`
   );
-  // ... (otros logs de inicio)
+  console.log(
+    `El endpoint para iniciar transcripciones es: POST ${
+      process.env.SERVER_BASE_URL || `http://localhost:${PORT}` // En producción, SERVER_BASE_URL será el dominio público
+    }/transcribe`
+  );
+  console.log(
+    `El endpoint para recibir webhooks de Fireflies es: POST ${
+      process.env.SERVER_BASE_URL || `http://localhost:${PORT}`
+    }/marketplace/files/fireflies` // Refleja la URL completa
+  );
+
+  if (!process.env.SERVER_BASE_URL) {
+    console.warn(
+      "ADVERTENCIA: SERVER_BASE_URL no está definida en el archivo .env. La URL del webhook enviada a Fireflies podría ser incorrecta."
+    );
+  } else if (process.env.SERVER_BASE_URL.includes("localhost")) {
+    console.warn(
+      "ADVERTENCIA: SERVER_BASE_URL apunta a 'localhost'. Para producción, esta debe ser la URL pública del servidor (ej. https://api.nevtis.com) y para desarrollo local con webhooks, se necesita ngrok o similar."
+    );
+  }
 });
