@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fireflies-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fireflies
+  template:
+    metadata:
+      labels:
+        app: fireflies
+    spec:
+      containers:
+        - name: fireflies
+          image: juliocodes/adminspace-fireflies:latest
+          ports:
+            - containerPort: 3001
